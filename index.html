@@ -6,10 +6,16 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Goap FSM - Example</title>
-    <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css' integrity='sha512-EZLkOqwILORob+p0BXZc+Vm3RgJBOe1Iq/0fiI7r/wJgzOFZMlsqTa29UEl6v6U6gsV4uIpsNZoV32YZqrCRCQ==' crossorigin='anonymous'/>
+    <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/skeleton/2.0.4/skeleton.min.css'
+        integrity='sha512-EZLkOqwILORob+p0BXZc+Vm3RgJBOe1Iq/0fiI7r/wJgzOFZMlsqTa29UEl6v6U6gsV4uIpsNZoV32YZqrCRCQ=='
+        crossorigin='anonymous' />
 </head>
 
 <body>
+    <a style="position:fixed;right:0;top:0;" href="https://github.com/LordFB/Goap_FSM"><img loading="lazy" width="149" height="149"
+            src="ribbon_black.png"
+            class="attachment-full size-full" alt="Fork me on GitHub" data-recalc-dims="1"></a>
+    <div id="display"></div>
     <script type="module">
         import { woodcutter } from './woodcutter.js';
         import { Goap } from './goap.js';
@@ -39,7 +45,7 @@
         }
 
         function draw(){
-            document.body.innerHTML = "";
+            document.querySelector('#display').innerHTML = "";
             let el = document.createElement('div');
             Object.assign( el.style, {
                 outline:'1px solid #CCC',
@@ -50,7 +56,7 @@
                 minHeight:'200px',
             } )
             el.innerHTML = `<u><b>Current State</b></u><br/>${goap.state.name}<pre>${JSON.stringify(goap.parameters, null, 2)}</pre>`;
-            document.body.appendChild(el);
+            document.querySelector('#display').appendChild(el);
         }
 
     </script>
