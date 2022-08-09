@@ -16,10 +16,24 @@
         }
 
         #display {
+            position: fixed;
+            top:0;
+            left:0;
+            right:0;
             display: flex;
             margin: 25px;
             column-gap: 2rem;
             justify-content: center;
+            z-index:9999;
+        }
+        #display > div{
+            background:white;
+        }
+        #renderer{
+            position: fixed;
+            top:0;
+            left:0;
+            z-index:8888;
         }
     </style>
 </head>
@@ -29,28 +43,43 @@
             height="149" src="ribbon_black.png" class="attachment-full size-full" alt="Fork me on GitHub"
             data-recalc-dims="1"></a>
     <div id="display"></div>
+    <div id="renderer"></div>
     <script type="module">
         import { world } from './world.js';
         import { woodcutter } from './woodcutter.js';
         import { stonecutter } from './stonecutter.js';
+        import { simpleAI } from './simpleAI.js';
         import { Goap } from './goap.js';
-        let worldGoap = new Goap(world);
-        new Goap( woodcutter );
-        new Goap( stonecutter );      
-        var fps = 1;
-        var now, delta;
+
+        import { WorldRenderer } from './renderer.js';
+
+        let worldGoap = new Goap(world);   
+        //new Goap( simpleAI );
+
+        let worldRenderer = new WorldRenderer('#renderer', window.Goap );
+
+        var fps = 60;
+        var rendererFps = 60;
+        var now, delta, fpsDelta;
         var then = Date.now();
+        var fpsThen = Date.now();
         var interval = 1000/fps;
+        var rendererInterval = 1000/rendererFps;
       
         function loop(){
             requestAnimationFrame(loop);
             now = Date.now();
             delta = now - then;
+            fpsDelta = now - fpsThen;
             
             if (delta > interval) {              
                 then = now - (delta % interval);
-                draw();
+                drawUI();
                 update();
+            }
+            if (fpsDelta > rendererInterval) {              
+                fpsThen = now - (fpsDelta % rendererInterval);
+                draw();
             }
         }
         loop();
@@ -60,8 +89,10 @@
                 window.Goap[agent].tick();
             }
         }
-
         function draw(){
+            worldRenderer.draw();
+        }
+        function drawUI(){
             document.querySelector('#display').innerHTML = "";
             for ( let a in window.Goap ){
                 let agent = window.Goap[a];
@@ -76,7 +107,7 @@
                 } );
                 let data = agent.parameters;
                 if ( typeof agent.getData === 'function') data = agent.getData();
-                el.innerHTML = `<h5>${agent.name}</h5><u><b>Current State</b></u><br/>${agent.state.name}<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                el.innerHTML = `<h5>${agent.name}</h5><u><b>Current State</b></u><br/>${agent.state.name}<pre style="padding:5px;outline:1px solid #CCC; max-height:250px; overflow-y:scroll;">${JSON.stringify(data, null, 2)}</pre>`;
                 document.querySelector('#display').appendChild(el);
             }
         }
