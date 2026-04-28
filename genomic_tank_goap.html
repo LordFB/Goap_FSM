@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genomic Tank: Breeding Lab - GOAP Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #010204; font-family: 'Courier New', monospace; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; }
+        .lab-ui { position: absolute; top: 20px; left: 20px; z-index: 100; pointer-events: none; }
+        .lab-panel { background: rgba(1, 5, 10, 0.95); border: 1px solid #00ff88; padding: 15px; pointer-events: auto; color: #00ff88; margin-bottom: 10px; box-shadow: 0 0 30px rgba(0, 255, 136, 0.05); }
+        .btn { background: transparent; border: 1px solid #00ff88; color: #00ff88; padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: 11px; text-transform: uppercase; margin-right: 5px; transition: all 0.2s; }
+        .btn:hover { background: #00ff88; color: #010204; }
+        .stats { font-size: 10px; opacity: 0.8; margin-top: 10px; line-height: 1.4; border-top: 1px solid rgba(0,255,136,0.2); padding-top: 8px; }
+        .auto-save-indicator { font-size: 9px; color: #00ff88; margin-top: 5px; opacity: 0.5; }
+        .hint { font-size: 10px; color: #00ff88; margin-top: 10px; font-weight: bold; text-shadow: 0 0 5px #00ff88; }
+        #fish-tooltip { position: absolute; background: rgba(0, 10, 15, 0.9); border: 1px solid #00ff88; color: #00ff88; padding: 10px; font-size: 10px; pointer-events: none; display: none; z-index: 200; min-width: 200px; box-shadow: 0 0 15px rgba(0, 255, 136, 0.3); }
+        .tooltip-row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+        .dna-str { font-size: 8px; opacity: 0.6; word-break: break-all; margin-top: 5px; border-top: 1px solid rgba(0,255,136,0.2); padding-top: 5px; }
+        .goap-debug { position: absolute; bottom: 20px; right: 20px; background: rgba(1, 5, 10, 0.9); border: 1px solid #00ff88; padding: 10px; color: #00ff88; font-size: 9px; z-index: 100; max-width: 300px; }
+        .action-item { margin: 2px 0; padding: 2px; background: rgba(0, 255, 136, 0.1); }
+        .action-active { background: rgba(0, 255, 136, 0.3); font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="fish-tooltip"></div>
+    <div class="goap-debug" id="goap-debug"></div>
+    <div class="lab-ui">
+        <div class="lab-panel">
+            <div style="font-weight: bold; margin-bottom: 8px; letter-spacing: 1px;">GENOMIC BREEDING LAB - GOAP</div>
+            <button class="btn" id="mass-spawn">Reset (Adam & Eve)</button>
+            <button class="btn" id="save-tank">Manual Save</button>
+            <div class="stats" id="tank-stats">Population: 0<br>Bio-State: Initializing...</div>
+            <div class="auto-save-indicator" id="save-status">Auto-save: Active</div>
+            <div class="hint">CLICK TOP TO FEED | HOVER FOR INFO | WATCH GOAP DECISIONS</div>
+        </div>
+    </div>
+
+    <script type="module">
+        // ============================================
+        // GOAP SYSTEM - Goal-Oriented Action Planning
+        // ============================================
+        
+        class WorldState {
+            constructor() {
+                this.hunger = 100;          // 0-100
+                this.energy = 100;          // 0-100
+                this.isMature = false;
+                this.hasMate = false;
+                this.isSafe = true;
+                this.hasTerritory = false;
+                this.isTired = false;
+                this.isStressed = false;
+                this.foodNearby = false;
+                this.mateNearby = false;
+                this.predatorNearby = false;
+                this.groupNearby = false;
+            }
+
+            copy() {
+                const ws = new WorldState();
+                Object.assign(ws, this);
+                return ws;
+            }
+
+            equals(other) {
+                return JSON.stringify(this) === JSON.stringify(other);
+            }
+        }
+
+        class Action {
+            constructor(name, cost, preconditions, effects) {
+                this.name = name;
+                this.cost = cost;
+                this.preconditions = preconditions || {};
+                this.effects = effects || {};
+            }
+
+            isPreconditionSatisfied(worldState) {
+                for (let key in this.preconditions) {
+                    if (worldState[key] !== this.preconditions[key]) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            applyEffects(worldState) {
+                const newState = worldState.copy();
+                for (let key in this.effects) {
+                    newState[key] = this.effects[key];
+                }
+                return newState;
+            }
+        }
+
+        class GOAPAgent {
+            constructor() {
+                this.actions = [];
+                this.currentPlan = [];
+                this.currentAction = null;
+                this.currentGoal = null;
+                this.worldState = new WorldState();
+                this.debugInfo = { lastPlan: [], currentAction: 'None', goal: 'None' };
+            }
+
+            addAction(action) {
+                this.actions.push(action);
+            }
+
+            findPlan(startState, goalState) {
+                // A* search for planning
+                const openSet = [{ state: startState, plan: [], cost: 0 }];
+                const closedSet = [];
+                
+                while (openSet.length > 0) {
+                    // Get lowest cost node
+                    openSet.sort((a, b) => a.cost - b.cost);
+                    const current = openSet.shift();
+                    
+                    // Check if goal is reached
+                    if (this.isGoalReached(current.state, goalState)) {
+                        return current.plan;
+                    }
+                    
+                    // Skip if already processed
+                    if (closedSet.some(s => s.equals(current.state))) {
+                        continue;
+                    }
+                    closedSet.push(current.state);
+                    
+                    // Try all actions
+                    for (let action of this.actions) {
+                        if (action.isPreconditionSatisfied(current.state)) {
+                            const newState = action.applyEffects(current.state);
+                            const newPlan = [...current.plan, action];
+                            const newCost = current.cost + action.cost;
+                            
+                            openSet.push({
+                                state: newState,
+                                plan: newPlan,
+                                cost: newCost
+                            });
+                        }
+                    }
+                    
+                    // Prevent infinite loops
+                    if (openSet.length > 1000) break;
+                }
+                
+                return null; // No plan found
+            }
+
+            isGoalReached(state, goal) {
+                for (let key in goal) {
+                    if (state[key] !== goal[key]) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            updateWorldState(agent) {
+                this.worldState.hunger = agent.hunger;
+                this.worldState.energy = agent.energy;
+                this.worldState.isMature = agent.isMature;
+                this.worldState.isTired = agent.energy < 30;
+                this.worldState.isStressed = agent.hunger < 20 || agent.isDead;
+                this.worldState.foodNearby = agent.foodNearby;
+                this.worldState.mateNearby = agent.mateNearby;
+                this.worldState.predatorNearby = agent.predatorNearby;
+                this.worldState.groupNearby = agent.groupNearby;
+                this.worldState.isSafe = !agent.predatorNearby;
+            }
+
+            think(agent, goals) {
+                this.updateWorldState(agent);
+                
+                // Find highest priority achievable goal
+                let bestPlan = null;
+                let bestGoal = null;
+                let lowestCost = Infinity;
+                
+                for (let goal of goals) {
+                    const plan = this.findPlan(this.worldState, goal.state);
+                    if (plan && plan.length > 0) {
+                        const totalCost = plan.reduce((sum, action) => sum + action.cost, 0) - goal.priority;
+                        if (totalCost < lowestCost) {
+                            lowestCost = totalCost;
+                            bestPlan = plan;
+                            bestGoal = goal;
+                        }
+                    }
+                }
+                
+                if (bestPlan) {
+                    this.currentPlan = bestPlan;
+                    this.currentGoal = bestGoal;
+                    this.debugInfo.lastPlan = bestPlan.map(a => a.name);
+                    this.debugInfo.goal = bestGoal.name;
+                    return true;
+                }
+                
+                return false;
+            }
+
+            executeNextAction(agent) {
+                if (this.currentPlan.length > 0) {
+                    this.currentAction = this.currentPlan.shift();
+                    this.debugInfo.currentAction = this.currentAction.name;
+                    return this.currentAction;
+                }
+                this.currentAction = null;
+                this.debugInfo.currentAction = 'None';
+                return null;
+            }
+        }
+
+        // ============================================
+        // FISH BEHAVIOR WITH GOAP
+        // ============================================
+
+        class GenomicFish {
+            constructor(genome, scene, sex = null) {
+                this.genome = genome;
+                this.scene = scene;
+                this.sex = sex || (Math.random() > 0.5 ? 'M' : 'F');
+                this.age = 0;
+                this.isMature = false;
+                this.lastReproduction = -100;
+                this.hunger = 100;
+                this.energy = 100;
+                this.isDead = false;
+                this.group = new THREE.Group();
+                this.params = this.decode(genome);
+                this.velocity = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).normalize().multiplyScalar(0.005);
+                this.acceleration = new THREE.Vector3();
+                this.steerForce = new THREE.Vector3();
+                this.smoothedSteer = new THREE.Vector3();
+                this.minSpeed = 0.002;
+                this.maxSpeed = (0.01 + (this.params.movement.speedMult * 0.02));
+                this.maxForce = 0.001;
+                this.localTime = Math.random() * 100;
+                this.noiseOffset = Math.random() * 1000;
+                this.targetRotation = new THREE.Quaternion();
+                
+                // GOAP-specific properties
+                this.goapAgent = new GOAPAgent();
+                this.setupGOAPActions();
+                this.goals = [];
+                this.currentTarget = null;
+                this.actionTimer = 0;
+                this.currentBehavior = 'IDLE';
+                
+                // Perception
+                this.foodNearby = false;
+                this.mateNearby = false;
+                this.predatorNearby = false;
+                this.groupNearby = false;
+                this.nearestFood = null;
+                this.nearestMate = null;
+                
+                this.init();
+                this.scene.add(this.group);
+                this.mesh.userData.fish = this;
+            }
+
+            setupGOAPActions() {
+                const agent = this.goapAgent;
+                
+                // Survival Actions
+                agent.addAction(new Action(
+                    'EAT_FOOD',
+                    2,
+                    { hunger: null },
+                    { hunger: 100, energy: null }
+                ));
+                
+                agent.addAction(new Action(
+                    'SEEK_FOOD',
+                    3,
+                    { foodNearby: true, hunger: null },
+                    { foodNearby: false }
+                ));
+                
+                agent.addAction(new Action(
+                    'REST',
+                    1,
+                    { energy: null, isSafe: true },
+                    { energy: 100, isTired: false }
+                ));
+                
+                agent.addAction(new Action(
+                    'FLEE_DANGER',
+                    5,
+                    { predatorNearby: true, isSafe: false },
+                    { predatorNearby: false, isSafe: true }
+                ));
+                
+                // Social Actions
+                agent.addAction(new Action(
+                    'SEEK_MATE',
+                    4,
+                    { isMature: true, hasMate: false, mateNearby: true },
+                    { hasMate: true, mateNearby: false }
+                ));
+                
+                agent.addAction(new Action(
+                    'MATE',
+                    3,
+                    { isMature: true, hasMate: true, hunger: null, energy: null },
+                    { hasMate: false, lastReproduction: Date.now() }
+                ));
+                
+                agent.addAction(new Action(
+                    'JOIN_GROUP',
+                    2,
+                    { groupNearby: true, isSocial: true },
+                    { groupNearby: false, isSafe: true }
+                ));
+                
+                // Exploration Actions
+                agent.addAction(new Action(
+                    'EXPLORE',
+                    1,
+                    { isSafe: true, hunger: null },
+                    {}
+                ));
+                
+                agent.addAction(new Action(
+                    'PATROL_TERRITORY',
+                    2,
+                    { hasTerritory: true, isSafe: true },
+                    {}
+                ));
+            }
+
+            setupGoals() {
+                this.goals = [];
+                
+                // Critical survival needs (highest priority)
+                if (this.hunger < 30) {
+                    this.goals.push({ name: 'SURVIVE', state: { hunger: 100 }, priority: 100 });
+                }
+                
+                if (this.energy < 20) {
+                    this.goals.push({ name: 'REST', state: { energy: 100, isTired: false }, priority: 90 });
+                }
+                
+                if (this.predatorNearby) {
+                    this.goals.push({ name: 'ESCAPE', state: { isSafe: true, predatorNearby: false }, priority: 95 });
+                }
+                
+                // Reproduction (medium priority when mature)
+                if (this.isMature && this.hunger > 50 && this.energy > 50 && Date.now() - this.lastReproduction > 30000) {
+                    this.goals.push({ name: 'REPRODUCE', state: { hasMate: true }, priority: 70 });
+                }
+                
+                // Social needs
+                if (this.params.isSocial && !this.groupNearby) {
+                    this.goals.push({ name: 'SOCIALIZE', state: { groupNearby: true }, priority: 50 });
+                }
+                
+                // Default exploration
+                if (this.goals.length === 0) {
+                    this.goals.push({ name: 'EXPLORE', state: {}, priority: 10 });
+                }
+            }
+
+            decode(g) {
+                const charVal = (idx) => {
+                    const c = g[idx % 64].toUpperCase();
+                    if (c === 'C') return 0; if (c === 'T') return 1; if (c === 'A') return 2; return 3;
+                };
+                const getGene = (start, len) => {
+                    let s = 0;
+                    for(let i=0; i<len; i++) s += charVal(start + i);
+                    return s / (len * 3);
+                };
+                const globalScale = (0.12 + getGene(32, 4) * 0.28);
+                const sexMod = this.sex === 'M' ? 0.9 : 1.1;
+
+                return {
+                    globalScale,
+                    isSocial: getGene(48, 4) > 0.4,
+                    laziness: getGene(10, 4),
+                    fertility: Math.floor(2 + getGene(24, 4) * 6),
+                    aggression: getGene(62, 2),
+                    curiosity: getGene(58, 4),
+                    body: {
+                        length: (7 + (getGene(0, 4) - 0.5) * 4) * globalScale * sexMod,
+                        height: (1.5 + (getGene(4, 4) - 0.5) * 2) * globalScale * sexMod,
+                        width: (0.7 + (getGene(8, 4) - 0.5) * 1.5) * globalScale * sexMod,
+                        taper: 0.7 + (getGene(12, 4) - 0.5) * 1.2,
+                        noseWidth: (Math.pow(getGene(52, 4), 3) * 2) * globalScale,
+                        noseTipWidth: (Math.pow(getGene(56, 4), 2) * 2) * globalScale,
+                        noseFlatness: getGene(60, 4) * 0.8
+                    },
+                    fins: {
+                        dorsal: (1.0 + (getGene(16, 4) - 0.5) * 1.5) * globalScale * (this.sex === 'M' ? 1.5 : 1.0),
+                        caudal: (1.4 + (getGene(20, 4) - 0.5) * 2.0) * globalScale
+                    },
+                    movement: {
+                        freq: 0.5 + (getGene(28, 4) - 0.5) * 0.5,
+                        amp: (0.4 + (getGene(32, 4) - 0.5) * 0.8) * globalScale,
+                        speedMult: 0.4 + getGene(40, 4) * 1.2
+                    },
+                    color: new THREE.Color().setRGB(
+                        getGene(36, 8) + (this.sex === 'M' ? 0.2 : 0),
+                        getGene(44, 8),
+                        getGene(52, 8) + (this.sex === 'F' ? 0.2 : 0)
+                    )
+                };
+            }
+
+            getBodyRadius(x) {
+                const L = this.params.body.length;
+                const xNorm = (x + L / 2) / L;
+                if (xNorm < 0 || xNorm > 1) return { h: 0, w: 0 };
+                let profile = Math.sin(Math.PI * Math.pow(xNorm, Math.max(0.1, this.params.body.taper)));
+                let h = profile * this.params.body.height * 0.5;
+                let w = profile * this.params.body.width * 0.5;
+                if (xNorm < 0.15) {
+                    const nf = 1.0 - (xNorm / 0.15);
+                    const tm = 1.0 - Math.min(1, Math.max(0, (xNorm - 0) / (0.05 - 0)));
+                    const cnw = this.params.body.noseWidth * (1 - tm) + this.params.body.noseTipWidth * tm;
+                    w += nf * cnw;
+                    h *= (1.0 - nf * this.params.body.noseFlatness);
+                }
+                return { h, w };
+            }
+
+            init() {
+                const bodyGeo = new THREE.CylinderBufferGeometry(1, 1, this.params.body.length, 16, 32, true);
+                bodyGeo.rotateZ(Math.PI / 2);
+                const pos = bodyGeo.attributes.position;
+                const v = new THREE.Vector3();
+                for (let i = 0; i < pos.count; i++) {
+                    v.fromBufferAttribute(pos, i);
+                    const r = this.getBodyRadius(v.x);
+                    v.y *= r.h * 2;
+                    v.z *= r.w * 2;
+                    pos.setXYZ(i, v.x, v.y, v.z);
+                }
+                this.material = new THREE.ShaderMaterial({
+                    uniforms: {
+                        uTime: { value: 0 },
+                        uFreq: { value: this.params.movement.freq },
+                        uAmp: { value: this.params.movement.amp },
+                        uLength: { value: this.params.body.length },
+                        uBaseColor: { value: this.params.color },
+                        uBellyColor: { value: new THREE.Color(0xb0c0c5) },
+                        uEnergy: { value: 0.0 },
+                        uGrowth: { value: 0.1 },
+                        uHunger: { value: 1.0 }
+                    },
+                    vertexShader: `
+                        uniform float uTime, uFreq, uAmp, uLength, uEnergy, uGrowth;
+                        varying vec2 vUv;
+                        varying vec3 vNormal, vViewPosition;
+                        void main() {
+                            vUv = uv;
+                            vec3 pos = position * uGrowth;
+                            float dFreq = uFreq * clamp(0.5 + uEnergy * 1.5, 0.4, 1.8);
+                            float dAmp = uAmp * clamp(0.6 + uEnergy * 1.0, 0.5, 1.5);
+                            float phase = (pos.x / (uLength * uGrowth)) * dFreq - uTime * 3.0;
+                            float influence = smoothstep(-uLength * uGrowth * 0.45, uLength * uGrowth * 0.5, pos.x);
+                            pos.z += sin(phase) * dAmp * influence * uGrowth;
+                            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                            vViewPosition = -mvPosition.xyz;
+                            vNormal = normalMatrix * normal;
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform vec3 uBaseColor, uBellyColor;
+                        uniform float uHunger;
+                        varying vec2 vUv;
+                        varying vec3 vNormal, vViewPosition;
+                        void main() {
+                            vec3 n = normalize(vNormal);
+                            vec3 v = normalize(vViewPosition);
+                            vec3 hungryColor = mix(uBaseColor, vec3(0.1, 0.0, 0.0), (1.0 - uHunger) * 0.5);
+                            vec3 c = mix(uBellyColor, hungryColor, smoothstep(0.05, 0.8, vUv.y));
+                            float f = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+                            gl_FragColor = vec4(c + f * 0.25, 1.0);
+                        }
+                    `,
+                    side: THREE.DoubleSide
+                });
+                this.mesh = new THREE.Mesh(bodyGeo, this.material);
+                this.mesh.rotation.y = -Math.PI / 2;
+                this.group.add(this.mesh);
+                this.addFins();
+            }
+
+            addFins() {
+                const L = this.params.body.length;
+                const createFin = (xS, xE, hVal, type) => {
+                    const geo = new THREE.PlaneBufferGeometry(xE - xS, hVal, 8, 2);
+                    const pos = geo.attributes.position;
+                    const v = new THREE.Vector3();
+                    for (let i = 0; i < pos.count; i++) {
+                        v.fromBufferAttribute(pos, i);
+                        const x = v.x + (xS + xE) / 2;
+                        const r = this.getBodyRadius(x);
+                        const row = 1.0 - (v.y / hVal + 0.5);
+                        if (type === 'd') { v.y = r.h + row * hVal; v.z = 0; }
+                        else if (type === 'c') {
+                            const xl = (v.x / (xE - xS)) + 0.5;
+                            v.y = (v.y / hVal) * hVal * (1.0 + xl * 2.0);
+                            v.x = x; v.z = 0;
+                        }
+                        pos.setXYZ(i, type === 'c' ? v.x : x, v.y, v.z);
+                    }
+                    const fmesh = new THREE.Mesh(geo, this.material);
+                    fmesh.rotation.y = -Math.PI / 2;
+                    this.group.add(fmesh);
+                };
+                createFin(L * -0.1, L * 0.3, this.params.fins.dorsal, 'd');
+                createFin(L * 0.45, L * 0.65, this.params.fins.caudal, 'c');
+            }
+
+            applyForce(force) {
+                this.steerForce.add(force);
+            }
+
+            perceive(others, food, predators) {
+                // Update perception based on surroundings
+                this.foodNearby = false;
+                this.mateNearby = false;
+                this.predatorNearby = false;
+                this.groupNearby = false;
+                this.nearestFood = null;
+                this.nearestMate = null;
+                
+                const perceptionRange = 50;
+                const visionAngle = 0.7;
+                const forward = this.velocity.clone().normalize();
+                
+                // Check for food
+                let closestFoodDist = Infinity;
+                for (let f of food) {
+                    const d = this.group.position.distanceTo(f.mesh.position);
+                    if (d < perceptionRange && d < closestFoodDist) {
+                        const toFood = f.mesh.position.clone().sub(this.group.position).normalize();
+                        if (forward.dot(toFood) > visionAngle) {
+                            this.foodNearby = true;
+                            closestFoodDist = d;
+                            this.nearestFood = f;
+                        }
+                    }
+                }
+                
+                // Check for mates and other fish
+                for (let other of others) {
+                    if (other === this || other.isDead) continue;
+                    
+                    const d = this.group.position.distanceTo(other.group.position);
+                    if (d < perceptionRange) {
+                        const toOther = other.group.position.clone().sub(this.group.position).normalize();
+                        
+                        // Check if in field of view
+                        if (forward.dot(toOther) > visionAngle) {
+                            // Check for potential mate
+                            if (this.isMature && other.isMature && this.sex !== other.sex) {
+                                this.mateNearby = true;
+                                if (!this.nearestMate || d < this.group.position.distanceTo(this.nearestMate.group.position)) {
+                                    this.nearestMate = other;
+                                }
+                            }
+                            
+                            // Check for group members
+                            if (this.params.isSocial && other.params.isSocial) {
+                                this.groupNearby = true;
+                            }
+                            
+                            // Check for predators (larger, aggressive fish)
+                            if (other.params.aggression > 0.7 && other.params.globalScale > this.params.globalScale * 1.3) {
+                                this.predatorNearby = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            executeGOAPAction(action, others, food, dt) {
+                if (!action) return;
+                
+                this.currentBehavior = action.name;
+                this.actionTimer += dt;
+                
+                switch (action.name) {
+                    case 'EAT_FOOD':
+                        if (this.nearestFood && !this.nearestFood.eaten) {
+                            const toFood = this.nearestFood.mesh.position.clone().sub(this.group.position);
+                            const dist = toFood.length();
+                            if (dist < 3) {
+                                this.nearestFood.eaten = true;
+                                this.hunger = Math.min(100, this.hunger + 35);
+                                this.energy = Math.min(100, this.energy + 10);
+                            } else {
+                                this.applyForce(toFood.normalize().multiplyScalar(this.maxForce * 2.5));
+                            }
+                        }
+                        break;
+                        
+                    case 'SEEK_FOOD':
+                        if (this.nearestFood) {
+                            const toFood = this.nearestFood.mesh.position.clone().sub(this.group.position);
+                            this.applyForce(toFood.normalize().multiplyScalar(this.maxForce * 2.0));
+                        }
+                        break;
+                        
+                    case 'REST':
+                        this.velocity.multiplyScalar(0.95);
+                        this.energy = Math.min(100, this.energy + dt * 5);
+                        break;
+                        
+                    case 'FLEE_DANGER':
+                        // Flee from nearest predator
+                        for (let other of others) {
+                            if (other !== this && !other.isDead && other.params.aggression > 0.7) {
+                                const away = this.group.position.clone().sub(other.group.position).normalize();
+                                this.applyForce(away.multiplyScalar(this.maxForce * 3.0));
+                                break;
+                            }
+                        }
+                        break;
+                        
+                    case 'SEEK_MATE':
+                        if (this.nearestMate) {
+                            const toMate = this.nearestMate.group.position.clone().sub(this.group.position);
+                            const dist = toMate.length();
+                            if (dist < 4) {
+                                this.mate(this.nearestMate);
+                            } else {
+                                this.applyForce(toMate.normalize().multiplyScalar(this.maxForce * 2.0));
+                            }
+                        }
+                        break;
+                        
+                    case 'MATE':
+                        if (this.nearestMate) {
+                            const dist = this.group.position.distanceTo(this.nearestMate.group.position);
+                            if (dist < 4) {
+                                this.mate(this.nearestMate);
+                            } else {
+                                const toMate = this.nearestMate.group.position.clone().sub(this.group.position);
+                                this.applyForce(toMate.normalize().multiplyScalar(this.maxForce * 1.5));
+                            }
+                        }
+                        break;
+                        
+                    case 'JOIN_GROUP':
+                        // Move toward center of nearby group
+                        let center = new THREE.Vector3();
+                        let count = 0;
+                        for (let other of others) {
+                            if (other !== this && !other.isDead && other.params.isSocial) {
+                                const d = this.group.position.distanceTo(other.group.position);
+                                if (d < 30) {
+                                    center.add(other.group.position);
+                                    count++;
+                                }
+                            }
+                        }
+                        if (count > 0) {
+                            center.divideScalar(count);
+                            const toCenter = center.sub(this.group.position);
+                            this.applyForce(toCenter.normalize().multiplyScalar(this.maxForce * 1.5));
+                        }
+                        break;
+                        
+                    case 'EXPLORE':
+                    case 'PATROL_TERRITORY':
+                        // Wander with purpose
+                        const wanderForce = new THREE.Vector3(
+                            Math.sin(this.actionTimer * 0.5 + this.noiseOffset),
+                            Math.cos(this.actionTimer * 0.3 + this.noiseOffset * 1.5) * 0.3,
+                            Math.sin(this.actionTimer * 0.4 - this.noiseOffset * 0.5)
+                        ).normalize().multiplyScalar(this.maxForce * 0.5);
+                        this.applyForce(wanderForce);
+                        break;
+                }
+            }
+
+            flock(others, behavior, et, food) {
+                if (this.isDead) return;
+                
+                // Perceive environment
+                this.perceive(others, food, []);
+                
+                // Setup goals based on current state
+                this.setupGoals();
+                
+                // Think and plan
+                const shouldReplan = this.goapAgent.currentPlan.length === 0 || 
+                                    this.actionTimer > 3.0 ||
+                                    this.hunger < 20 ||
+                                    this.predatorNearby;
+                
+                if (shouldReplan) {
+                    this.goapAgent.think(this, this.goals);
+                    this.actionTimer = 0;
+                }
+                
+                // Execute current action
+                if (this.goapAgent.currentPlan.length > 0 || this.goapAgent.currentAction) {
+                    const action = this.goapAgent.currentAction || this.goapAgent.executeNextAction(this);
+                    if (action) {
+                        this.executeGOAPAction(action, others, food, 0.016);
+                    }
+                }
+                
+                // Apply basic flocking as secondary behavior
+                if (this.params.isSocial && this.groupNearby) {
+                    let sep = new THREE.Vector3(), ali = new THREE.Vector3(), coh = new THREE.Vector3();
+                    let count = 0;
+                    const dSep = 8.0, dNeighbor = 25.0;
+                    
+                    for (let other of others) {
+                        if (other === this || other.isDead) continue;
+                        const toOther = other.group.position.clone().sub(this.group.position);
+                        const d = toOther.length();
+                        
+                        if (d > 0 && d < dNeighbor) {
+                            if (d < dSep) {
+                                sep.add(this.group.position.clone().sub(other.group.position).normalize().divideScalar(d));
+                            }
+                            ali.add(other.velocity);
+                            coh.add(other.group.position);
+                            count++;
+                        }
+                    }
+                    
+                    if (count > 0) {
+                        ali.divideScalar(count).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
+                        coh.divideScalar(count).sub(this.group.position).normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
+                        this.applyForce(ali.multiplyScalar(behavior.alignment * 0.3));
+                        this.applyForce(coh.multiplyScalar(behavior.cohesion * 0.3));
+                    }
+                    if (sep.length() > 0) {
+                        sep.normalize().multiplyScalar(this.maxSpeed).sub(this.velocity).clampLength(0, this.maxForce);
+                        this.applyForce(sep.multiplyScalar(behavior.separation * 0.5));
+                    }
+                }
+            }
+
+            isGenomeCompatible(other) {
+                let diff = 0;
+                for (let i = 0; i < 64; i += 8) { 
+                    if (this.genome[i] !== other.genome[i]) diff++; 
+                }
+                return diff < 6;
+            }
+
+            die() { 
+                this.isDead = true; 
+                this.goapAgent.debugInfo.currentAction = 'DEAD';
+            }
+
+            mate(partner) {
+                if (Date.now() - this.lastReproduction < 30000) return;
+                if (!this.isGenomeCompatible(partner)) return;
+                
+                this.lastReproduction = Date.now();
+                partner.lastReproduction = Date.now();
+                
+                window.dispatchEvent(new CustomEvent('birth', {
+                    detail: { 
+                        p1: (this.sex === 'F' ? this : partner).genome, 
+                        p2: (this.sex === 'M' ? this : partner).genome, 
+                        pos: (this.sex === 'F' ? this : partner).group.position.clone(), 
+                        count: (this.sex === 'F' ? this : partner).params.fertility 
+                    }
+                }));
+                
+                this.energy -= 20;
+                partner.energy -= 20;
+            }
+
+            boundaries(bounds) {
+                const m = 12;
+                const fMax = this.maxForce * 8;
+                let s = new THREE.Vector3();
+                const check = (v, l, a) => {
+                    if (v < -l + m) s[a] = fMax * Math.pow(1.0 - Math.abs(v + l) / m, 2);
+                    else if (v > l - m) s[a] = -fMax * Math.pow(1.0 - Math.abs(l - v) / m, 2);
+                    if (v < -l) { this.group.position[a] = -l; this.velocity[a] *= -0.2; }
+                    if (v > l) { this.group.position[a] = l; this.velocity[a] *= -0.2; }
+                };
+                check(this.group.position.x, bounds.x, 'x');
+                check(this.group.position.y, bounds.y, 'y');
+                check(this.group.position.z, bounds.z, 'z');
+                this.applyForce(s);
+            }
+
+            update(dt, globalAnimSpeed, turnSmoothness, tankY) {
+                if (this.isDead) {
+                    this.group.position.y = THREE.MathUtils.lerp(this.group.position.y, -tankY + 1, 0.05);
+                    this.group.rotation.x = THREE.MathUtils.lerp(this.group.rotation.x, Math.PI, 0.05);
+                    this.material.uniforms.uHunger.value = 0.0;
+                    return;
+                }
+                
+                this.age += dt;
+                this.hunger -= dt * 0.35;
+                this.energy -= dt * 0.25;
+                
+                if (this.hunger <= 0 || this.energy <= 0) this.die();
+                if (!this.isMature && this.age > 20) this.isMature = true;
+                
+                this.material.uniforms.uGrowth.value = Math.min(1.0, 0.3 + (this.age / 40) * 0.7);
+                this.material.uniforms.uHunger.value = Math.max(0, this.hunger / 100);
+                
+                const prevVel = this.velocity.clone();
+                this.smoothedSteer.lerp(this.steerForce, 0.02);
+                this.acceleration.add(this.smoothedSteer);
+                this.velocity.multiplyScalar(0.99 - (this.params.laziness * 0.01)).add(this.acceleration);
+                this.velocity.clampLength(this.minSpeed, this.maxSpeed);
+                this.group.position.add(this.velocity);
+                
+                const energyLevel = this.velocity.length() / this.maxSpeed;
+                this.material.uniforms.uEnergy.value = energyLevel;
+                
+                this.acceleration.set(0, 0, 0);
+                this.steerForce.set(0, 0, 0);
+                
+                const forward = this.velocity.clone().normalize();
+                const m = new THREE.Matrix4().lookAt(this.group.position, this.group.position.clone().add(forward), new THREE.Vector3(0, 1, 0));
+                this.targetRotation.setFromRotationMatrix(m);
+                const bank = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -this.velocity.clone().cross(prevVel).dot(new THREE.Vector3(0, 1, 0)) * 40.0);
+                this.group.quaternion.slerp(this.targetRotation.multiply(bank), turnSmoothness);
+                
+                this.localTime += dt * globalAnimSpeed;
+                this.material.uniforms.uTime.value = this.localTime;
+            }
+
+            dispose() {
+                this.group.traverse(o => { 
+                    if (o.geometry) o.geometry.dispose(); 
+                    if (o.material) o.material.dispose(); 
+                });
+                this.scene.remove(this.group);
+            }
+        }
+
+        // ============================================
+        // PELLET SYSTEM
+        // ============================================
+
+        class Pellet {
+            constructor(pos, scene) {
+                this.scene = scene;
+                this.eaten = false;
+                this.age = 0;
+                this.floatDuration = 4.0 + Math.random() * 3.0;
+                this.sinkSpeed = 0.005 + Math.random() * 0.01;
+                this.mesh = new THREE.Mesh(
+                    new THREE.SphereBufferGeometry(0.45, 6, 6), 
+                    new THREE.MeshPhongMaterial({ 
+                        color: 0xccaa00, 
+                        emissive: 0x332200, 
+                        shininess: 30 
+                    })
+                );
+                this.mesh.position.copy(pos);
+                this.velocity = new THREE.Vector3((Math.random()-0.5)*0.015, 0, (Math.random()-0.5)*0.015);
+                this.scene.add(this.mesh);
+            }
+            
+            update(dt, minY, maxY) {
+                this.age += dt;
+                if (this.age < this.floatDuration) {
+                    this.mesh.position.y = maxY + Math.sin(this.age * 2.0) * 0.08;
+                } else {
+                    this.velocity.y = -this.sinkSpeed;
+                    this.mesh.position.add(this.velocity);
+                }
+                if (this.mesh.position.y < minY) {
+                    this.mesh.position.y = minY;
+                    this.velocity.set(0,0,0);
+                }
+            }
+            
+            dispose() { 
+                this.mesh.geometry.dispose(); 
+                this.mesh.material.dispose(); 
+                this.scene.remove(this.mesh); 
+            }
+        }
+
+        // ============================================
+        // CAMERA SYSTEM
+        // ============================================
+
+        class CustomCamera {
+            constructor(camera, dom, tableY) {
+                this.camera = camera; 
+                this.dom = dom; 
+                this.tableY = tableY;
+                this.target = new THREE.Vector3(0, 0, 0);
+                this.phi = Math.PI / 3; 
+                this.theta = Math.PI / 4; 
+                this.distance = 250;
+                this.sensitivity = 0.005; 
+                this.zoomSpeed = 0.15; 
+                this.minDist = 80; 
+                this.maxDist = 600;
+                this.init();
+            }
+            
+            init() { 
+                this.dom.addEventListener('wheel', (e) => { 
+                    this.distance = Math.max(this.minDist, Math.min(this.maxDist, this.distance + e.deltaY * this.zoomSpeed)); 
+                }, { passive: true }); 
+            }
+            
+            handleDrag(dx, dy) { 
+                this.theta -= dx * this.sensitivity; 
+                this.phi = Math.max(0.1, Math.min(Math.PI - 0.1, this.phi + dy * this.sensitivity)); 
+            }
+            
+            update() {
+                let x = this.distance * Math.sin(this.phi) * Math.cos(this.theta);
+                let y = this.distance * Math.cos(this.phi);
+                let z = this.distance * Math.sin(this.phi) * Math.sin(this.theta);
+                
+                const proposedY = y + this.target.y;
+                const buffer = 15;
+                if (proposedY < this.tableY + buffer) {
+                    y = (this.tableY + buffer) - this.target.y;
+                    this.phi = Math.acos(y / this.distance);
+                }
+
+                this.camera.position.set(x, y, z).add(this.target);
+                this.camera.lookAt(this.target);
+            }
+        }
+
+        // ============================================
+        // MAIN TANK LAB COMPONENT
+        // ============================================
+
+        class TankLab extends HTMLElement {
+            constructor() {
+                super();
+                this.pop = []; 
+                this.food = [];
+                this.cfg = { 
+                    population: 45, 
+                    tankX: 60, 
+                    tankY: 35, 
+                    tankZ: 45, 
+                    separation: 5.5, 
+                    alignment: 0.6, 
+                    cohesion: 0.3, 
+                    animSpeed: 0.4, 
+                    turnSmoothness: 0.015 
+                };
+                this.storageKey = 'genomic_tank_goap_v1';
+                this.lastSaveTime = 0;
+                this.raycaster = new THREE.Raycaster(); 
+                this.mouse = new THREE.Vector2();
+                this.input = { startX: 0, startY: 0, moved: false, isDown: false };
+                this.hoverRaycaster = new THREE.Raycaster();
+                this.debugElement = null;
+            }
+
+            connectedCallback() {
+                this.initScene();
+                this.initTankVisuals();
+                this.initGUI();
+                this.debugElement = document.getElementById('goap-debug');
+                this.tooltip = document.getElementById('fish-tooltip');
+                if (!this.loadState()) this.spawn(true);
+                this.events();
+                this.loop();
+            }
+
+            initScene() {
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x000204);
+                this.scene.fog = new THREE.FogExp2(0x000408, 0.0035);
+                this.camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 1, 5000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                document.getElementById('canvas-container').appendChild(this.renderer.domElement);
+                this.customCam = new CustomCamera(this.camera, this.renderer.domElement, -this.cfg.tankY - 5);
+                this.scene.add(new THREE.AmbientLight(0x224466, 1.2));
+                const sl = new THREE.SpotLight(0x00ff88, 1.5, 1000, 0.4, 0.5); 
+                sl.position.set(0, 300, 100); 
+                this.scene.add(sl);
+                this.clock = new THREE.Clock();
+            }
+
+            initTankVisuals() {
+                this.tankGroup = new THREE.Group();
+                this.scene.add(this.tankGroup);
+                this.rebuildTank();
+                const floor = new THREE.Mesh(
+                    new THREE.PlaneBufferGeometry(4000, 4000), 
+                    new THREE.MeshStandardMaterial({ color: 0x010204, roughness: 0.9 })
+                );
+                floor.rotation.x = -Math.PI / 2; 
+                floor.position.y = -350; 
+                this.scene.add(floor);
+            }
+
+            rebuildTank() {
+                while(this.tankGroup.children.length > 0) {
+                    const obj = this.tankGroup.children[0];
+                    if (obj.geometry) obj.geometry.dispose();
+                    if (obj.material) {
+                        Array.isArray(obj.material) 
+                            ? obj.material.forEach(m => m.dispose()) 
+                            : obj.material.dispose();
+                    }
+                    this.tankGroup.remove(obj);
+                }
+
+                const { tankX: tx, tankY: ty, tankZ: tz } = this.cfg;
+                const glassMat = new THREE.MeshPhysicalMaterial({ 
+                    color: 0x4488aa, 
+                    metalness: 0, 
+                    roughness: 0.1, 
+                    transmission: 0.95, 
+                    transparent: true, 
+                    opacity: 0.1, 
+                    thickness: 2.0, 
+                    side: THREE.DoubleSide 
+                });
+                const baseMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.8, roughness: 0.2 });
+                const trimMat = new THREE.MeshStandardMaterial({ color: 0x00ff88, emissive: 0x00ff88, emissiveIntensity: 0.2 });
+                const tableTopMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.3, metalness: 0.6 });
+
+                const tableX = tx * 2.8; 
+                const tableZ = tz * 2.8; 
+                const tableY = -ty - 5;
+                const tableTop = new THREE.Mesh(new THREE.BoxBufferGeometry(tableX, 4, tableZ), tableTopMat);
+                tableTop.position.y = tableY; 
+                this.tankGroup.add(tableTop);
+
+                const createLeg = (lx, lz) => {
+                    const leg = new THREE.Mesh(new THREE.BoxBufferGeometry(6, 400, 6), baseMat);
+                    leg.position.set(lx * (tableX/2 - 10), tableY - 200, lz * (tableZ/2 - 10));
+                    this.tankGroup.add(leg);
+                };
+                createLeg(-1, -1); 
+                createLeg(1, -1); 
+                createLeg(-1, 1); 
+                createLeg(1, 1);
+
+                const glassBox = new THREE.Mesh(new THREE.BoxBufferGeometry(tx*2, ty*2, tz*2), glassMat);
+                this.tankGroup.add(glassBox);
+                this.tankTop = new THREE.Mesh(
+                    new THREE.PlaneBufferGeometry(tx*2, tz*2), 
+                    new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.05, side: THREE.DoubleSide })
+                );
+                this.tankTop.rotation.x = -Math.PI / 2; 
+                this.tankTop.position.y = ty; 
+                this.tankGroup.add(this.tankTop);
+
+                const base = new THREE.Mesh(new THREE.BoxBufferGeometry(tx*2.1, 4, tz*2.1), baseMat);
+                base.position.y = -ty - 2; 
+                this.tankGroup.add(base);
+
+                const createPillar = (px, pz) => {
+                    const pillar = new THREE.Mesh(new THREE.BoxBufferGeometry(4, ty*2+4, 4), baseMat);
+                    pillar.position.set(px, 0, pz); 
+                    this.tankGroup.add(pillar);
+                    const trim = new THREE.Mesh(new THREE.BoxBufferGeometry(4.2, 1, 4.2), trimMat);
+                    trim.position.set(px, ty, pz); 
+                    this.tankGroup.add(trim);
+                };
+                createPillar(-tx, -tz); 
+                createPillar(tx, -tz); 
+                createPillar(-tx, tz); 
+                createPillar(tx, tz);
+
+                const createHorizontal = (y, w, h, d, rx=0, ry=0, rz=0) => {
+                    const bar = new THREE.Mesh(new THREE.BoxBufferGeometry(w, h, d), baseMat);
+                    bar.position.y = y; 
+                    bar.rotation.set(rx, ry, rz);
+                    this.tankGroup.add(bar);
+                };
+                createHorizontal(ty + 1, tx*2+4, 2, 4, 0, 0, 0); 
+                createHorizontal(ty + 1, tx*2+4, 2, 4, 0, Math.PI/2, 0);
+                this.tankLines = new THREE.LineSegments(
+                    new THREE.EdgesGeometry(new THREE.BoxBufferGeometry(tx*2, ty*2, tz*2)), 
+                    new THREE.LineBasicMaterial({ color: 0x00ff88, opacity: 0.2, transparent: true })
+                );
+                this.tankGroup.add(this.tankLines);
+
+                if (this.customCam) this.customCam.tableY = tableY;
+            }
+
+            saveState() {
+                localStorage.setItem(this.storageKey, JSON.stringify({
+                    cfg: this.cfg,
+                    specimens: this.pop.filter(f => !f.isDead).map(f => ({
+                        genome: f.genome, 
+                        pos: { x: f.group.position.x, y: f.group.position.y, z: f.group.position.z },
+                        sex: f.sex, 
+                        age: f.age, 
+                        lastReproduction: f.lastReproduction, 
+                        hunger: f.hunger,
+                        energy: f.energy
+                    }))
+                }));
+                const status = document.getElementById('save-status');
+                if (status) { 
+                    status.textContent = 'Auto-Saved: ' + new Date().toLocaleTimeString(); 
+                    status.style.opacity = '1'; 
+                    setTimeout(() => status.style.opacity = '0.5', 1000); 
+                }
+            }
+
+            loadState() {
+                const raw = localStorage.getItem(this.storageKey);
+                if (!raw) return false;
+                try {
+                    const data = JSON.parse(raw);
+                    Object.assign(this.cfg, data.cfg);
+                    this.rebuildTank();
+                    this.pop.forEach(f => f.dispose()); 
+                    this.pop = [];
+                    data.specimens.forEach(s => 
+                        this.addSpecimen(s.genome, new THREE.Vector3(s.pos.x, s.pos.y, s.pos.z), s.sex, s.age, s.lastReproduction, s.hunger, s.energy)
+                    );
+                    this.updateStats(); 
+                    return true;
+                } catch (e) { 
+                    console.error('Load failed:', e);
+                    return false; 
+                }
+            }
+
+            crossover(dna1, dna2) {
+                let child = "";
+                const mid = Math.floor(Math.random() * 64);
+                for (let i = 0; i < 64; i++) {
+                    if (Math.random() < 0.05) {
+                        child += "CTAG"[Math.floor(Math.random() * 4)];
+                    } else {
+                        child += (i < mid) ? dna1[i] : dna2[i];
+                    }
+                }
+                return child;
+            }
+
+            spawn(isAdamEve = true) {
+                const gen = () => { 
+                    let d = ""; 
+                    for(let i=0; i<64; i++) d += "CTAG"[Math.floor(Math.random()*4)]; 
+                    return d; 
+                };
+                this.pop.forEach(f => f.dispose()); 
+                this.pop = [];
+                if (isAdamEve) {
+                    const dna = gen(); 
+                    this.addSpecimen(dna, new THREE.Vector3(-15, 0, 0), 'M', 30, -100);
+                    this.addSpecimen(dna, new THREE.Vector3(15, 0, 0), 'F', 30, -100);
+                } else { 
+                    for(let i=0; i<this.cfg.population; i++) 
+                        this.addSpecimen(gen()); 
+                }
+                this.updateStats();
+            }
+
+            addSpecimen(dna, pos = null, sex = null, age = 0, lastRep = -100, hunger = 100, energy = 100) {
+                const f = new GenomicFish(dna, this.scene, sex);
+                f.age = age; 
+                f.lastReproduction = lastRep; 
+                f.hunger = hunger;
+                f.energy = energy;
+                if (f.age > 15) f.isMature = true;
+                if (pos) f.group.position.copy(pos);
+                else f.group.position.set(
+                    (Math.random()-0.5)*this.cfg.tankX*0.8, 
+                    (Math.random()-0.5)*this.cfg.tankY*0.8, 
+                    (Math.random()-0.5)*this.cfg.tankZ*0.8
+                );
+                this.pop.push(f);
+            }
+
+            updateStats() {
+                const statsEl = document.getElementById('tank-stats');
+                if (statsEl) {
+                    const alive = this.pop.filter(p => !p.isDead).length;
+                    const behaviors = {};
+                    this.pop.forEach(f => {
+                        if (!f.isDead) {
+                            behaviors[f.currentBehavior] = (behaviors[f.currentBehavior] || 0) + 1;
+                        }
+                    });
+                    const behaviorSummary = Object.entries(behaviors)
+                        .sort((a,b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([k,v]) => `${k}:${v}`)
+                        .join(', ');
+                    
+                    statsEl.innerHTML = `Specimens: ${alive}<br>Active Behaviors: ${behaviorSummary || 'None'}`;
+                }
+            }
+
+            initGUI() {
+                this.gui = new lil.GUI();
+                const t = this.gui.addFolder('Tank Geometry');
+                t.add(this.cfg, 'tankX', 20, 120).onChange(() => this.rebuildTank());
+                t.add(this.cfg, 'tankY', 10, 80).onChange(() => this.rebuildTank());
+                t.add(this.cfg, 'tankZ', 20, 100).onChange(() => this.rebuildTank());
+                const b = this.gui.addFolder('Behavior');
+                b.add(this.cfg, 'separation', 0, 15); 
+                b.add(this.cfg, 'alignment', 0, 4); 
+                b.add(this.cfg, 'cohesion', 0, 4);
+                const v = this.gui.addFolder('Visuals');
+                v.add(this.cfg, 'animSpeed', 0.05, 1.5).name('Global Speed');
+                v.add(this.cfg, 'turnSmoothness', 0.005, 0.1).name('Turn Smoothness');
+                document.getElementById('mass-spawn').onclick = () => this.spawn(true);
+                document.getElementById('save-tank').onclick = () => this.saveState();
+            }
+
+            spawnRipple(pos) {
+                const mesh = new THREE.Mesh(
+                    new THREE.RingBufferGeometry(0.5, 1.5, 32), 
+                    new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+                );
+                mesh.position.copy(pos); 
+                mesh.rotation.x = -Math.PI / 2; 
+                this.scene.add(mesh);
+                const start = performance.now();
+                const anim = () => {
+                    const progress = (performance.now() - start) / 500;
+                    if (progress < 1) {
+                        mesh.scale.set(1 + progress * 8, 1 + progress * 8, 1);
+                        mesh.material.opacity = 0.8 * (1 - progress);
+                        requestAnimationFrame(anim);
+                    } else { 
+                        mesh.geometry.dispose(); 
+                        mesh.material.dispose(); 
+                        this.scene.remove(mesh); 
+                    }
+                };
+                anim();
+            }
+
+            events() {
+                window.addEventListener('resize', () => { 
+                    this.camera.aspect = window.innerWidth / window.innerHeight; 
+                    this.camera.updateProjectionMatrix(); 
+                    this.renderer.setSize(window.innerWidth, window.innerHeight); 
+                });
+                
+                window.addEventListener('birth', (e) => {
+                    if (this.pop.filter(f => !f.isDead).length < 250) {
+                        for (let i = 0; i < e.detail.count; i++) {
+                            this.addSpecimen(
+                                this.crossover(e.detail.p1, e.detail.p2), 
+                                e.detail.pos.clone().add(new THREE.Vector3((Math.random()-0.5)*4, (Math.random()-0.5)*4, (Math.random()-0.5)*4)), 
+                                null, 0, -50
+                            );
+                        }
+                    }
+                });
+                
+                const dom = this.renderer.domElement;
+                dom.addEventListener('mousedown', (e) => { 
+                    this.input.isDown = true; 
+                    this.input.moved = false; 
+                    this.input.startX = e.clientX; 
+                    this.input.startY = e.clientY; 
+                });
+                
+                window.addEventListener('mousemove', (e) => {
+                    const rect = dom.getBoundingClientRect(); 
+                    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1; 
+                    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                    if (this.input.isDown) {
+                        const dx = e.clientX - this.input.startX; 
+                        const dy = e.clientY - this.input.startY;
+                        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) { 
+                            this.input.moved = true; 
+                            this.customCam.handleDrag(dx, dy); 
+                            this.input.startX = e.clientX; 
+                            this.input.startY = e.clientY; 
+                        }
+                    }
+                    this.checkHover(e.clientX, e.clientY);
+                });
+                
+                window.addEventListener('mouseup', (e) => {
+                    if (!this.input.isDown) return; 
+                    this.input.isDown = false;
+                    if (!this.input.moved) {
+                        this.raycaster.setFromCamera(this.mouse, this.camera);
+                        const hits = this.raycaster.intersectObject(this.tankTop);
+                        if (hits.length > 0) {
+                            const p = hits[0].point; 
+                            this.spawnRipple(p);
+                            for (let i = 0; i < 6; i++) {
+                                this.food.push(new Pellet(
+                                    p.clone().add(new THREE.Vector3((Math.random()-0.5)*15, 0, (Math.random()-0.5)*15)), 
+                                    this.scene
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+
+            checkHover(screenX, screenY) {
+                this.hoverRaycaster.setFromCamera(this.mouse, this.camera);
+                const intersects = this.hoverRaycaster.intersectObjects(
+                    this.pop.filter(f => !f.isDead).map(f => f.mesh)
+                );
+                if (intersects.length > 0) {
+                    const fish = intersects[0].object.userData.fish;
+                    this.tooltip.style.display = 'block'; 
+                    this.tooltip.style.left = (screenX + 15) + 'px'; 
+                    this.tooltip.style.top = (screenY + 15) + 'px';
+                    this.tooltip.innerHTML = `
+                        <div class="tooltip-row"><span>Sex:</span><span>${fish.sex}</span></div>
+                        <div class="tooltip-row"><span>Maturity:</span><span>${fish.isMature ? 'Adult' : `Juvenile (${Math.floor(fish.age)}s)`}</span></div>
+                        <div class="tooltip-row"><span>Hunger:</span><span>${Math.max(0, Math.floor(fish.hunger))}%</span></div>
+                        <div class="tooltip-row"><span>Energy:</span><span>${Math.max(0, Math.floor(fish.energy))}%</span></div>
+                        <div class="tooltip-row"><span>Current Goal:</span><span>${fish.goapAgent.debugInfo.goal}</span></div>
+                        <div class="tooltip-row"><span>Action:</span><span>${fish.goapAgent.debugInfo.currentAction}</span></div>
+                        <div class="tooltip-row"><span>Social:</span><span>${fish.params.isSocial ? 'High' : 'Low'}</span></div>
+                        <div class="dna-str">GENOME: ${fish.genome}</div>
+                    `;
+                } else {
+                    this.tooltip.style.display = 'none';
+                }
+            }
+
+            updateDebugInfo() {
+                if (!this.debugElement) return;
+                
+                // Show debug info for a few selected fish
+                const activeFish = this.pop.filter(f => !f.isDead).slice(0, 3);
+                let html = '<div style="font-weight:bold;margin-bottom:5px;">GOAP DEBUG</div>';
+                
+                activeFish.forEach((fish, idx) => {
+                    html += `<div style="margin-bottom:8px;border-bottom:1px solid rgba(0,255,136,0.2);padding-bottom:4px;">
+                        <div style="color:#00ff88;font-weight:bold;">Fish ${idx+1} (${fish.sex})</div>
+                        <div>Goal: ${fish.goapAgent.debugInfo.goal}</div>
+                        <div>Action: <span class="action-item action-active">${fish.goapAgent.debugInfo.currentAction}</span></div>
+                        <div>Hunger: ${Math.floor(fish.hunger)}% | Energy: ${Math.floor(fish.energy)}%</div>
+                    </div>`;
+                });
+                
+                this.debugElement.innerHTML = html;
+            }
+
+            loop() {
+                requestAnimationFrame(() => this.loop());
+                const dt = Math.min(this.clock.getDelta(), 0.05);
+                const et = this.clock.getElapsedTime();
+                
+                // Update all fish with GOAP
+                this.pop.forEach(f => { 
+                    f.flock(this.pop, this.cfg, et, this.food); 
+                    f.boundaries({ x: this.cfg.tankX, y: this.cfg.tankY, z: this.cfg.tankZ }); 
+                    f.update(dt, this.cfg.animSpeed, this.cfg.turnSmoothness, this.cfg.tankY); 
+                });
+                
+                // Update food
+                for (let i = this.food.length - 1; i >= 0; i--) { 
+                    this.food[i].update(dt, -this.cfg.tankY, this.cfg.tankY); 
+                    if (this.food[i].eaten || (this.food[i].mesh.position.y <= -this.cfg.tankY && Math.random() < 0.005)) { 
+                        this.food[i].dispose(); 
+                        this.food.splice(i, 1); 
+                    } 
+                }
+                
+                // Auto-save
+                if (et - this.lastSaveTime >= 8.0) { 
+                    this.saveState(); 
+                    this.lastSaveTime = et; 
+                }
+                
+                // Update UI
+                this.updateStats();
+                this.updateDebugInfo();
+                
+                // Render
+                this.customCam.update(); 
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+        
+        customElements.define('genomic-tank-lab', TankLab);
+        window.onload = () => { 
+            if (!document.querySelector('genomic-tank-lab')) 
+                document.body.appendChild(new TankLab()); 
+        };
+    </script>
+</body>
+</html>
