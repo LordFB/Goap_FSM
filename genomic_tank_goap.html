@@ -1164,8 +1164,8 @@
                 this.pop = [];
                 if (isAdamEve) {
                     const dna = gen(); 
-                    this.addSpecimen(dna, new THREE.Vector3(-15, 0, 0), 'M', 30, -100);
-                    this.addSpecimen(dna, new THREE.Vector3(15, 0, 0), 'F', 30, -100);
+                    this.addSpecimen(dna, new THREE.Vector3(-15, 0, 0), 'M', 30, -100, 100, 100);
+                    this.addSpecimen(dna, new THREE.Vector3(15, 0, 0), 'F', 30, -100, 100, 100);
                 } else { 
                     for(let i=0; i<this.cfg.population; i++) 
                         this.addSpecimen(gen()); 
@@ -1263,7 +1263,7 @@
                             this.addSpecimen(
                                 this.crossover(e.detail.p1, e.detail.p2), 
                                 e.detail.pos.clone().add(new THREE.Vector3((Math.random()-0.5)*4, (Math.random()-0.5)*4, (Math.random()-0.5)*4)), 
-                                null, 0, -50
+                                null, 0, -50, 100, 100
                             );
                         }
                     }
